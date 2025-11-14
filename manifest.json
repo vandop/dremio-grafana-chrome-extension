@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "Grafana UUID Mapper",
+  "version": "1.0.0",
+  "description": "Maps UUIDs to human-readable names in Grafana dashboards using Dremio queries",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "contextMenus",
+    "notifications"
+  ],
+  "host_permissions": [
+    "*://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "run_at": "document_idle",
+      "match_about_blank": false,
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Configure Grafana UUID Mapper",
+    "default_icon": {
+      "16": "icons/icon16.svg",
+      "32": "icons/icon32.svg",
+      "48": "icons/icon48.svg",
+      "128": "icons/icon128.svg"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.svg",
+    "32": "icons/icon32.svg",
+    "48": "icons/icon48.svg",
+    "128": "icons/icon128.svg"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "styles.css"
+      ],
+      "matches": [
+        "*://*/*"
+      ]
+    }
+  ]
+}
