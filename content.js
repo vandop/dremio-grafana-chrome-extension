@@ -1,18 +1,35 @@
 // Content script for UUID detection and overlay management
 
 const LOG_PREFIX = '[UUID Mapper - Content]';
+const configHelpersPromise = import(chrome.runtime.getURL('src/common/config.js'))
+  .catch(error => {
+    console.error(`${LOG_PREFIX} Failed to load configuration helpers`, error);
+    throw error;
+  });
 
 class UuidMapper {
-  constructor() {
+  constructor({ configService = null, configModulePromise = configHelpersPromise } = {}) {
     this.uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
     this.processedUuids = new Set();
     this.mappingCache = new Map();
     this.overlay = null;
     this.hoverTimeout = null;
     this.config = null;
+    this.configHelpers = null;
+    this.configService = configService;
+    this.configModulePromise = configModulePromise;
+    this.configValid = false;
+    this.configErrorMessage = null;
 
     console.log(`${LOG_PREFIX} UuidMapper constructor called`);
     this.init();
+  }
+
+  async getConfigHelpers() {
+    if (!this.configHelpers) {
+      this.configHelpers = await this.configModulePromise;
+    }
+    return this.configHelpers;
   }
 
   async init() {
@@ -52,30 +69,45 @@ class UuidMapper {
 
   async loadConfiguration() {
     console.log(`${LOG_PREFIX} Loading configuration from storage`);
+    let helpers;
     try {
-      const result = await chrome.storage.sync.get(['dremioConfig', 'queryConfig', 'advancedConfig']);
-      this.config = {
-        dremio: result.dremioConfig || {},
-        query: result.queryConfig || {},
-        advanced: result.advancedConfig || { hoverDelay: 300 }
-      };
+      helpers = await this.getConfigHelpers();
+      if (!this.configService) {
+        this.configService = new helpers.ConfigService();
+      }
+
+      const config = await this.configService.load();
+      helpers.assertValidConfig(config);
+      this.config = config;
+      this.configValid = true;
+      this.configErrorMessage = null;
       console.log(`${LOG_PREFIX} Configuration loaded:`, {
+        dremioType: this.config.dremio.dremioType,
         hasServerUrl: !!this.config.dremio.serverUrl,
+        hasProjectId: !!this.config.dremio.projectId,
         hasTableName: !!this.config.query.columnMappings?.table_name,
         hoverDelay: this.config.advanced.hoverDelay
       });
     } catch (error) {
-      console.error(`${LOG_PREFIX} Failed to load configuration:`, error);
+      this.config = null;
+      this.configValid = false;
+      const isConfigError = helpers && error instanceof helpers.ConfigError;
+      if (isConfigError || error?.name === 'ConfigError') {
+        this.configErrorMessage = error.message;
+        console.warn(`${LOG_PREFIX} Configuration invalid: ${error.message}`);
+      } else {
+        this.configErrorMessage = 'Failed to load configuration';
+        console.error(`${LOG_PREFIX} Failed to load configuration:`, error);
+      }
     }
   }
 
   isConfigured() {
-    const configured = this.config &&
-      this.config.dremio.serverUrl &&
-      this.config.query.columnMappings &&
-      this.config.query.columnMappings.table_name;
-    console.log(`${LOG_PREFIX} Configuration check: ${configured ? 'VALID' : 'INVALID'}`);
-    return configured;
+    console.log(`${LOG_PREFIX} Configuration check: ${this.configValid ? 'VALID' : 'INVALID'}`);
+    if (!this.configValid && this.configErrorMessage) {
+      console.warn(`${LOG_PREFIX} ${this.configErrorMessage}`);
+    }
+    return this.configValid;
   }
 
   createOverlay() {

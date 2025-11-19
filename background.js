@@ -2,49 +2,60 @@
 
 const LOG_PREFIX = '[UUID Mapper - Background]';
 
+const configHelpersPromise = import(chrome.runtime.getURL('src/common/config.js'))
+  .catch(error => {
+    console.error(`${LOG_PREFIX} Failed to load configuration helpers`, error);
+    throw error;
+  });
+
 console.log(`${LOG_PREFIX} Service worker started`);
 
 class DremioClient {
-  constructor() {
+  constructor({ configService = null, configModulePromise = configHelpersPromise } = {}) {
     this.cache = new Map();
     this.pendingRequests = new Map();
+    this.configModulePromise = configModulePromise;
+    this.configHelpers = null;
+    this.configService = configService;
     console.log(`${LOG_PREFIX} DremioClient initialized`);
+  }
+
+  async getConfigHelpers() {
+    if (!this.configHelpers) {
+      this.configHelpers = await this.configModulePromise;
+    }
+    return this.configHelpers;
   }
 
   async getConfiguration() {
     console.log(`${LOG_PREFIX} Loading configuration from storage`);
-    const result = await chrome.storage.sync.get(['dremioConfig', 'queryConfig', 'advancedConfig']);
-    const config = {
-      dremio: result.dremioConfig || {},
-      query: result.queryConfig || {},
-      advanced: result.advancedConfig || {
-        cacheTTL: 3600000,
-        batchSize: 50,
-        cloudPollDelay: 2000,
-        cloudPollInterval: 1000,
-        cloudMaxAttempts: 30
-      }
-    };
+    const helpers = await this.getConfigHelpers();
+    if (!this.configService) {
+      this.configService = new helpers.ConfigService();
+    }
+
+    const config = await this.configService.load();
+    helpers.assertValidConfig(config);
+
     console.log(`${LOG_PREFIX} Configuration loaded:`, {
+      dremioType: config.dremio.dremioType,
       hasServerUrl: !!config.dremio.serverUrl,
+      hasProjectId: !!config.dremio.projectId,
+      authType: config.dremio.authType,
+      hasToken: !!config.dremio.token,
       hasTableName: !!config.query.columnMappings?.table_name,
       cacheTTL: config.advanced.cacheTTL,
       batchSize: config.advanced.batchSize,
       cloudPollDelay: config.advanced.cloudPollDelay,
       cloudMaxAttempts: config.advanced.cloudMaxAttempts
     });
+
     return config;
   }
 
   async executeQuery(uuids) {
     console.log(`${LOG_PREFIX} executeQuery called with ${uuids.length} UUIDs:`, uuids);
     const config = await this.getConfiguration();
-
-    if (!config.dremio.serverUrl || !config.query.columnMappings) {
-      const error = 'Extension not configured. Please configure Dremio connection.';
-      console.error(`${LOG_PREFIX} ${error}`);
-      throw new Error(error);
-    }
 
     // Check cache first
     const cachedResults = this.getCachedResults(uuids, config.advanced.cacheTTL);
