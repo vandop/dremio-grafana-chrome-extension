@@ -1,6 +1,13 @@
 // Configuration interface logic
 
 const LOG_PREFIX = '[UUID Mapper - Popup]';
+const DEFAULT_QUERY_TEMPLATE = `SELECT DISTINCT
+  {uuid_column} as uuid_value,
+  {name_column} as display_name,
+  {description_column} as description,
+  {timestamp_column} as last_updated
+FROM {table_name}
+WHERE {uuid_column} IN ({uuid_list})`;
 
 console.log(`${LOG_PREFIX} Popup opened`);
 
@@ -9,41 +16,199 @@ class ConfigurationWizard {
     console.log(`${LOG_PREFIX} ConfigurationWizard constructor`);
     this.currentStep = 1;
     this.maxStep = 3;
-    this.config = {
-      dremio: {},
-      query: { columnMappings: {} },
-      advanced: {}
+    this.stepMap = {
+      1: 'connection-step',
+      2: 'query-step',
+      3: 'advanced-step'
     };
+
+    this.elements = this.cacheElements();
+    this.stateBindings = this.createStateBindings();
+    this.state = this.initializeFormState();
+
+    this.bindStateListeners();
+    this.toggleDremioTypeFields(this.state.connection.dremioType);
+    this.toggleAuthFields(this.state.connection.authType);
+    this.updateQueryPreview();
 
     this.initializeEventListeners();
     this.loadConfiguration();
+    this.updateStepDisplay();
+  }
+
+  cacheElements() {
+    const ids = [
+      'next-btn',
+      'prev-btn',
+      'save-btn',
+      'test-connection',
+      'test-query',
+      'dremio-type',
+      'server-url',
+      'project-id',
+      'port',
+      'auth-type',
+      'username',
+      'password',
+      'token',
+      'table-name',
+      'uuid-column',
+      'name-column',
+      'desc-column',
+      'timestamp-column',
+      'cache-ttl',
+      'batch-size',
+      'hover-delay',
+      'cloud-poll-delay',
+      'cloud-poll-interval',
+      'cloud-max-attempts',
+      'query-preview',
+      'connection-step',
+      'query-step',
+      'advanced-step',
+      'step-1',
+      'step-2',
+      'step-3',
+      'connection-status',
+      'query-status',
+      'save-status',
+      'basic-auth',
+      'token-auth'
+    ];
+
+    const elements = {};
+    ids.forEach(id => {
+      const element = document.getElementById(id);
+      if (element) {
+        elements[id] = element;
+      }
+    });
+
+    elements.cloudOnly = Array.from(document.querySelectorAll('.cloud-only'));
+    elements.onpremOnly = Array.from(document.querySelectorAll('.onprem-only'));
+    elements.authFields = Array.from(document.querySelectorAll('.auth-fields'));
+
+    return elements;
+  }
+
+  createStateBindings() {
+    return {
+      'dremio-type': { path: ['connection', 'dremioType'], event: 'change', onChange: (value) => this.toggleDremioTypeFields(value) },
+      'server-url': { path: ['connection', 'serverUrl'] },
+      'project-id': { path: ['connection', 'projectId'] },
+      'port': { path: ['connection', 'port'] },
+      'auth-type': { path: ['connection', 'authType'], event: 'change', onChange: (value) => this.toggleAuthFields(value) },
+      'username': { path: ['connection', 'username'] },
+      'password': { path: ['connection', 'password'] },
+      'token': { path: ['connection', 'token'] },
+      'table-name': { path: ['query', 'columnMappings', 'table_name'], onChange: () => this.updateQueryPreview() },
+      'uuid-column': { path: ['query', 'columnMappings', 'uuid_column'], onChange: () => this.updateQueryPreview() },
+      'name-column': { path: ['query', 'columnMappings', 'name_column'], onChange: () => this.updateQueryPreview() },
+      'desc-column': { path: ['query', 'columnMappings', 'description_column'], onChange: () => this.updateQueryPreview() },
+      'timestamp-column': { path: ['query', 'columnMappings', 'timestamp_column'], onChange: () => this.updateQueryPreview() },
+      'cache-ttl': { path: ['advanced', 'cacheTTLMinutes'] },
+      'batch-size': { path: ['advanced', 'batchSize'] },
+      'hover-delay': { path: ['advanced', 'hoverDelay'] },
+      'cloud-poll-delay': { path: ['advanced', 'cloudPollDelay'] },
+      'cloud-poll-interval': { path: ['advanced', 'cloudPollInterval'] },
+      'cloud-max-attempts': { path: ['advanced', 'cloudMaxAttempts'] }
+    };
+  }
+
+  initializeFormState() {
+    return {
+      connection: {
+        dremioType: this.getElementValue('dremio-type', 'cloud'),
+        serverUrl: this.getElementValue('server-url', ''),
+        projectId: this.getElementValue('project-id', ''),
+        port: this.getElementValue('port', '9047'),
+        authType: this.getElementValue('auth-type', 'none'),
+        username: this.getElementValue('username', ''),
+        password: this.getElementValue('password', ''),
+        token: this.getElementValue('token', '')
+      },
+      query: {
+        columnMappings: {
+          table_name: this.getElementValue('table-name', ''),
+          uuid_column: this.getElementValue('uuid-column', ''),
+          name_column: this.getElementValue('name-column', ''),
+          description_column: this.getElementValue('desc-column', ''),
+          timestamp_column: this.getElementValue('timestamp-column', '')
+        }
+      },
+      advanced: {
+        cacheTTLMinutes: this.getElementValue('cache-ttl', '60'),
+        batchSize: this.getElementValue('batch-size', '50'),
+        hoverDelay: this.getElementValue('hover-delay', '300'),
+        cloudPollDelay: this.getElementValue('cloud-poll-delay', '2000'),
+        cloudPollInterval: this.getElementValue('cloud-poll-interval', '1000'),
+        cloudMaxAttempts: this.getElementValue('cloud-max-attempts', '30')
+      }
+    };
+  }
+
+  bindStateListeners() {
+    Object.entries(this.stateBindings).forEach(([id, binding]) => {
+      const element = this.elements[id];
+      if (!element) {
+        return;
+      }
+      const eventName = binding.event || 'input';
+      element.addEventListener(eventName, (event) => {
+        this.updateStateFromValue(id, event.target.value);
+      });
+    });
+  }
+
+  getElementValue(id, fallback = '') {
+    return this.elements[id]?.value ?? fallback;
+  }
+
+  setStateValue(path, value) {
+    if (!Array.isArray(path) || path.length === 0) {
+      return;
+    }
+
+    let target = this.state;
+    for (let i = 0; i < path.length - 1; i++) {
+      const key = path[i];
+      if (typeof target[key] !== 'object' || target[key] === null) {
+        target[key] = {};
+      }
+      target = target[key];
+    }
+    target[path[path.length - 1]] = value;
+  }
+
+  updateStateFromValue(id, rawValue) {
+    const binding = this.stateBindings[id];
+    if (!binding) {
+      return;
+    }
+
+    const value = typeof binding.parse === 'function' ? binding.parse(rawValue) : rawValue;
+    this.setStateValue(binding.path, value);
+
+    if (typeof binding.onChange === 'function') {
+      binding.onChange(value);
+    }
+  }
+
+  setInputValue(id, value) {
+    const element = this.elements[id];
+    if (!element) {
+      return;
+    }
+    element.value = value ?? '';
+    this.updateStateFromValue(id, element.value);
   }
 
   initializeEventListeners() {
-    // Navigation
-    document.getElementById('next-btn').addEventListener('click', () => this.nextStep());
-    document.getElementById('prev-btn').addEventListener('click', () => this.prevStep());
-    document.getElementById('save-btn').addEventListener('click', () => this.saveConfiguration());
-
-    // Dremio type change
-    document.getElementById('dremio-type').addEventListener('change', (e) => this.toggleDremioTypeFields(e.target.value));
-
-    // Authentication type change
-    document.getElementById('auth-type').addEventListener('change', (e) => this.toggleAuthFields(e.target.value));
-
-    // Connection testing
-    document.getElementById('test-connection').addEventListener('click', () => this.testConnection());
-
-    // Query building
-    ['table-name', 'uuid-column', 'name-column', 'desc-column', 'timestamp-column'].forEach(id => {
-      document.getElementById(id).addEventListener('input', () => this.updateQueryPreview());
-    });
-
-    // Query testing
-    document.getElementById('test-query').addEventListener('click', () => this.testQuery());
-
-    // Initialize dremio type fields visibility
-    this.toggleDremioTypeFields(document.getElementById('dremio-type').value);
+    this.elements['next-btn']?.addEventListener('click', () => this.nextStep());
+    this.elements['prev-btn']?.addEventListener('click', () => this.prevStep());
+    this.elements['save-btn']?.addEventListener('click', () => this.saveConfiguration());
+    this.elements['test-connection']?.addEventListener('click', () => this.testConnection());
+    this.elements['test-query']?.addEventListener('click', () => this.testQuery());
   }
 
   async loadConfiguration() {
@@ -74,66 +239,58 @@ class ConfigurationWizard {
   }
 
   populateConnectionForm(config) {
-    document.getElementById('dremio-type').value = config.dremioType || 'cloud';
-    document.getElementById('server-url').value = config.serverUrl || '';
-    document.getElementById('project-id').value = config.projectId || '';
-    document.getElementById('port').value = config.port || 9047;
-    document.getElementById('auth-type').value = config.authType || 'none';
-    document.getElementById('username').value = config.username || '';
-    document.getElementById('token').value = config.token || '';
-
-    this.toggleDremioTypeFields(config.dremioType || 'cloud');
-    this.toggleAuthFields(config.authType || 'none');
+    this.setInputValue('dremio-type', config.dremioType || 'cloud');
+    this.setInputValue('server-url', config.serverUrl || '');
+    this.setInputValue('project-id', config.projectId || '');
+    this.setInputValue('port', config.port || 9047);
+    this.setInputValue('auth-type', config.authType || 'none');
+    this.setInputValue('username', config.username || '');
+    this.setInputValue('password', config.password || '');
+    this.setInputValue('token', config.token || '');
   }
 
   populateQueryForm(config) {
     const mappings = config.columnMappings || {};
-    document.getElementById('table-name').value = mappings.table_name || '';
-    document.getElementById('uuid-column').value = mappings.uuid_column || '';
-    document.getElementById('name-column').value = mappings.name_column || '';
-    document.getElementById('desc-column').value = mappings.description_column || '';
-    document.getElementById('timestamp-column').value = mappings.timestamp_column || '';
-
+    this.setInputValue('table-name', mappings.table_name || '');
+    this.setInputValue('uuid-column', mappings.uuid_column || '');
+    this.setInputValue('name-column', mappings.name_column || '');
+    this.setInputValue('desc-column', mappings.description_column || '');
+    this.setInputValue('timestamp-column', mappings.timestamp_column || '');
     this.updateQueryPreview();
   }
 
   populateAdvancedForm(config) {
-    document.getElementById('cache-ttl').value = (config.cacheTTL || 3600000) / 60000; // Convert to minutes
-    document.getElementById('batch-size').value = config.batchSize || 50;
-    document.getElementById('hover-delay').value = config.hoverDelay || 300;
-    document.getElementById('cloud-poll-delay').value = config.cloudPollDelay || 2000;
-    document.getElementById('cloud-poll-interval').value = config.cloudPollInterval || 1000;
-    document.getElementById('cloud-max-attempts').value = config.cloudMaxAttempts || 30;
+    this.setInputValue('cache-ttl', (config.cacheTTL || 3600000) / 60000);
+    this.setInputValue('batch-size', config.batchSize || 50);
+    this.setInputValue('hover-delay', config.hoverDelay || 300);
+    this.setInputValue('cloud-poll-delay', config.cloudPollDelay || 2000);
+    this.setInputValue('cloud-poll-interval', config.cloudPollInterval || 1000);
+    this.setInputValue('cloud-max-attempts', config.cloudMaxAttempts || 30);
   }
 
   toggleDremioTypeFields(dremioType) {
     console.log(`${LOG_PREFIX} Toggling Dremio type fields: ${dremioType}`);
-    document.querySelectorAll('.cloud-only').forEach(el => el.classList.remove('active'));
-    document.querySelectorAll('.onprem-only').forEach(el => el.classList.remove('active'));
-
-    if (dremioType === 'cloud') {
-      document.querySelectorAll('.cloud-only').forEach(el => el.classList.add('active'));
-    } else {
-      document.querySelectorAll('.onprem-only').forEach(el => el.classList.add('active'));
-    }
+    this.elements.cloudOnly.forEach(el => el.classList.toggle('active', dremioType === 'cloud'));
+    this.elements.onpremOnly.forEach(el => el.classList.toggle('active', dremioType === 'onprem'));
   }
 
   toggleAuthFields(authType) {
-    document.querySelectorAll('.auth-fields').forEach(el => el.classList.remove('active'));
+    this.elements.authFields.forEach(el => el.classList.remove('active'));
 
     if (authType === 'basic') {
-      document.getElementById('basic-auth').classList.add('active');
+      this.elements['basic-auth']?.classList.add('active');
     } else if (authType === 'token') {
-      document.getElementById('token-auth').classList.add('active');
+      this.elements['token-auth']?.classList.add('active');
     }
   }
 
   updateQueryPreview() {
-    const tableName = document.getElementById('table-name').value || '{table_name}';
-    const uuidColumn = document.getElementById('uuid-column').value || '{uuid_column}';
-    const nameColumn = document.getElementById('name-column').value || '{name_column}';
-    const descColumn = document.getElementById('desc-column').value || 'NULL';
-    const timestampColumn = document.getElementById('timestamp-column').value || 'NULL';
+    const mappings = this.state.query.columnMappings;
+    const tableName = mappings.table_name || '{table_name}';
+    const uuidColumn = mappings.uuid_column || '{uuid_column}';
+    const nameColumn = mappings.name_column || '{name_column}';
+    const descColumn = mappings.description_column || 'NULL';
+    const timestampColumn = mappings.timestamp_column || 'NULL';
 
     const query = `SELECT DISTINCT
   ${uuidColumn} as uuid_value,
@@ -143,7 +300,9 @@ class ConfigurationWizard {
 FROM ${tableName}
 WHERE ${uuidColumn} IN ({uuid_list})`;
 
-    document.getElementById('query-preview').textContent = query;
+    if (this.elements['query-preview']) {
+      this.elements['query-preview'].textContent = query;
+    }
   }
 
   async testConnection() {
@@ -151,9 +310,7 @@ WHERE ${uuidColumn} IN ({uuid_list})`;
     const advancedConfig = this.getAdvancedConfig();
     console.log(`${LOG_PREFIX} Testing connection to ${config.serverUrl}:${config.port}`);
 
-    const button = document.getElementById('test-connection');
-    const status = document.getElementById('connection-status');
-
+    const button = this.elements['test-connection'];
     button.disabled = true;
     button.textContent = 'Testing...';
 
@@ -168,7 +325,7 @@ WHERE ${uuidColumn} IN ({uuid_list})`;
       this.showStatus('connection-status', response.valid ? 'success' : 'error', response.message);
 
       if (response.valid) {
-        document.getElementById('step-1').classList.add('completed');
+        this.elements['step-1']?.classList.add('completed');
       }
     } catch (error) {
       console.error(`${LOG_PREFIX} Test connection error:`, error);
@@ -182,21 +339,29 @@ WHERE ${uuidColumn} IN ({uuid_list})`;
   async testQuery() {
     const connectionConfig = this.getConnectionConfig();
     const queryConfig = this.getQueryConfig();
-
-    // Test with a dummy UUID
-    const testUuids = ['00000000-0000-0000-0000-000000000000'];
-    const query = this.buildTestQuery(testUuids, queryConfig);
-
-    const button = document.getElementById('test-query');
-    const status = document.getElementById('query-status');
+    const advancedConfig = this.getAdvancedConfig();
+    const button = this.elements['test-query'];
 
     button.disabled = true;
     button.textContent = 'Testing...';
+    this.showStatus('query-status', 'info', 'Running a test query...');
 
     try {
-      // This would need to be implemented in background.js
-      this.showStatus('query-status', 'info', 'Query structure validated (test implementation needed)');
-      document.getElementById('step-2').classList.add('completed');
+      const response = await chrome.runtime.sendMessage({
+        action: 'testQuery',
+        config: connectionConfig,
+        queryConfig,
+        advancedConfig
+      });
+
+      if (response.valid) {
+        const rows = typeof response.rows === 'number' ? response.rows : '0';
+        const message = response.message || `Query validated with ${rows} row(s).`;
+        this.showStatus('query-status', 'success', message);
+        this.elements['step-2']?.classList.add('completed');
+      } else {
+        this.showStatus('query-status', 'error', response.message || 'Query validation failed.');
+      }
     } catch (error) {
       this.showStatus('query-status', 'error', `Query test failed: ${error.message}`);
     } finally {
@@ -205,59 +370,37 @@ WHERE ${uuidColumn} IN ({uuid_list})`;
     }
   }
 
-  buildTestQuery(uuids, queryConfig) {
-    const uuidList = uuids.map(uuid => `'${uuid}'`).join(', ');
-    const mappings = queryConfig.columnMappings;
-
-    return `SELECT 
-  ${mappings.uuid_column} as uuid_value,
-  ${mappings.name_column} as display_name,
-  ${mappings.description_column || 'NULL'} as description,
-  ${mappings.timestamp_column || 'NULL'} as last_updated
-FROM ${mappings.table_name}
-WHERE ${mappings.uuid_column} IN (${uuidList})`;
-  }
-
   getConnectionConfig() {
+    const connection = this.state.connection;
     return {
-      dremioType: document.getElementById('dremio-type').value,
-      serverUrl: document.getElementById('server-url').value,
-      projectId: document.getElementById('project-id').value,
-      port: parseInt(document.getElementById('port').value) || 9047,
-      authType: document.getElementById('auth-type').value,
-      username: document.getElementById('username').value,
-      password: document.getElementById('password').value,
-      token: document.getElementById('token').value
+      dremioType: connection.dremioType,
+      serverUrl: connection.serverUrl,
+      projectId: connection.projectId,
+      port: parseInt(connection.port, 10) || 9047,
+      authType: connection.authType,
+      username: connection.username,
+      password: connection.password,
+      token: connection.token
     };
   }
 
   getQueryConfig() {
     return {
-      queryTemplate: `SELECT DISTINCT
-  {uuid_column} as uuid_value,
-  {name_column} as display_name,
-  {description_column} as description,
-  {timestamp_column} as last_updated
-FROM {table_name}
-WHERE {uuid_column} IN ({uuid_list})`,
-      columnMappings: {
-        table_name: document.getElementById('table-name').value,
-        uuid_column: document.getElementById('uuid-column').value,
-        name_column: document.getElementById('name-column').value,
-        description_column: document.getElementById('desc-column').value,
-        timestamp_column: document.getElementById('timestamp-column').value
-      }
+      queryTemplate: DEFAULT_QUERY_TEMPLATE,
+      columnMappings: { ...this.state.query.columnMappings }
     };
   }
 
   getAdvancedConfig() {
+    const advanced = this.state.advanced;
+    const ttlMinutes = parseInt(advanced.cacheTTLMinutes, 10);
     return {
-      cacheTTL: parseInt(document.getElementById('cache-ttl').value) * 60000, // Convert to ms
-      batchSize: parseInt(document.getElementById('batch-size').value),
-      hoverDelay: parseInt(document.getElementById('hover-delay').value),
-      cloudPollDelay: parseInt(document.getElementById('cloud-poll-delay').value),
-      cloudPollInterval: parseInt(document.getElementById('cloud-poll-interval').value),
-      cloudMaxAttempts: parseInt(document.getElementById('cloud-max-attempts').value)
+      cacheTTL: (Number.isFinite(ttlMinutes) ? ttlMinutes : 60) * 60000,
+      batchSize: parseInt(advanced.batchSize, 10) || 50,
+      hoverDelay: parseInt(advanced.hoverDelay, 10) || 300,
+      cloudPollDelay: parseInt(advanced.cloudPollDelay, 10) || 2000,
+      cloudPollInterval: parseInt(advanced.cloudPollInterval, 10) || 1000,
+      cloudMaxAttempts: parseInt(advanced.cloudMaxAttempts, 10) || 30
     };
   }
 
@@ -278,9 +421,8 @@ WHERE {uuid_column} IN ({uuid_list})`,
       await chrome.storage.sync.set(config);
       console.log(`${LOG_PREFIX} Configuration saved successfully`);
       this.showStatus('save-status', 'success', 'Configuration saved successfully!');
-      document.getElementById('step-3').classList.add('completed');
+      this.elements['step-3']?.classList.add('completed');
 
-      // Close popup after a short delay
       setTimeout(() => window.close(), 1500);
     } catch (error) {
       console.error(`${LOG_PREFIX} Failed to save configuration:`, error);
@@ -289,7 +431,11 @@ WHERE {uuid_column} IN ({uuid_list})`,
   }
 
   showStatus(elementId, type, message) {
-    const element = document.getElementById(elementId);
+    const element = this.elements[elementId];
+    if (!element) {
+      return;
+    }
+
     element.className = `status-message status-${type}`;
     element.textContent = message;
     element.style.display = 'block';
@@ -317,30 +463,51 @@ WHERE {uuid_column} IN ({uuid_list})`,
     }
   }
 
-  updateStepDisplay() {
-    // Hide all steps
-    document.querySelectorAll('.config-step').forEach(step => step.classList.remove('active'));
+  deriveStepState() {
+    const steps = Object.entries(this.stepMap).map(([stepNumber, sectionId]) => {
+      const numeric = Number(stepNumber);
+      return {
+        sectionId,
+        indicatorId: `step-${stepNumber}`,
+        isActive: numeric === this.currentStep,
+        isCompleted: numeric < this.currentStep
+      };
+    });
 
-    // Show current step
-    const stepMap = {
-      1: 'connection-step',
-      2: 'query-step',
-      3: 'advanced-step'
+    return {
+      steps,
+      navigation: {
+        showPrev: this.currentStep > 1,
+        showNext: this.currentStep < this.maxStep,
+        showSave: this.currentStep === this.maxStep
+      }
     };
-    document.getElementById(stepMap[this.currentStep]).classList.add('active');
+  }
 
-    // Update step indicators
-    document.querySelectorAll('.step').forEach((step, index) => {
-      step.classList.remove('active');
-      if (index + 1 === this.currentStep) {
-        step.classList.add('active');
+  updateStepDisplay() {
+    const state = this.deriveStepState();
+
+    state.steps.forEach(({ sectionId, indicatorId, isActive, isCompleted }) => {
+      const section = this.elements[sectionId];
+      if (section) {
+        section.classList.toggle('active', isActive);
+      }
+      const indicator = this.elements[indicatorId];
+      if (indicator) {
+        indicator.classList.toggle('active', isActive);
+        indicator.classList.toggle('completed', isCompleted);
       }
     });
 
-    // Update navigation buttons
-    document.getElementById('prev-btn').style.display = this.currentStep > 1 ? 'inline-block' : 'none';
-    document.getElementById('next-btn').style.display = this.currentStep < this.maxStep ? 'inline-block' : 'none';
-    document.getElementById('save-btn').style.display = this.currentStep === this.maxStep ? 'inline-block' : 'none';
+    if (this.elements['prev-btn']) {
+      this.elements['prev-btn'].style.display = state.navigation.showPrev ? 'inline-block' : 'none';
+    }
+    if (this.elements['next-btn']) {
+      this.elements['next-btn'].style.display = state.navigation.showNext ? 'inline-block' : 'none';
+    }
+    if (this.elements['save-btn']) {
+      this.elements['save-btn'].style.display = state.navigation.showSave ? 'inline-block' : 'none';
+    }
   }
 }
 

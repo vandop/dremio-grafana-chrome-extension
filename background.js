@@ -331,6 +331,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
     return true;
   }
+
+  if (request.action === 'testQuery') {
+    testDremioQuery(request.config, request.queryConfig, request.advancedConfig)
+      .then(result => {
+        console.log(`${LOG_PREFIX} Test query result:`, result);
+        sendResponse(result);
+      })
+      .catch(error => {
+        console.error(`${LOG_PREFIX} Test query error:`, error);
+        sendResponse({ valid: false, message: error.message });
+      });
+    return true;
+  }
 });
 
 async function testDremioConnection(config, advancedConfig = {}) {
@@ -341,4 +354,39 @@ async function testDremioConnection(config, advancedConfig = {}) {
   const transport = createDremioTransport(normalizedConfig, normalizedAdvanced);
   console.log(`${LOG_PREFIX} Testing ${normalizedConfig.dremioType === 'cloud' ? 'Dremio Cloud' : 'Dremio on-premise'} connection`);
   return transport.testConnection();
+}
+
+async function testDremioQuery(connectionConfig, queryConfig, advancedConfig = {}) {
+  const helpers = await configHelpersPromise;
+  const queryHelpers = await queryHelpersPromise;
+  const { createDremioTransport } = await transportHelpersPromise;
+
+  const normalizedConfig = helpers.normalizeDremioConfig(connectionConfig);
+  const normalizedQuery = helpers.normalizeQueryConfig(queryConfig || {});
+  if (queryConfig?.queryTemplate) {
+    normalizedQuery.queryTemplate = queryConfig.queryTemplate;
+  }
+  const normalizedAdvanced = helpers.normalizeAdvancedConfig(advancedConfig);
+
+  helpers.assertValidConfig({
+    dremio: normalizedConfig,
+    query: normalizedQuery,
+    advanced: normalizedAdvanced
+  });
+
+  const transport = createDremioTransport(normalizedConfig, normalizedAdvanced);
+  const uuids = ['00000000-0000-0000-0000-000000000000'];
+  const sql = queryHelpers.buildQuery(uuids, normalizedQuery);
+  console.log(`${LOG_PREFIX} Running test query for validation`);
+  const startTime = Date.now();
+  const rawResponse = await transport.runQuery(sql);
+  const parsed = queryHelpers.normalizeResponse(rawResponse, normalizedQuery);
+  const duration = Date.now() - startTime;
+
+  return {
+    valid: true,
+    rows: parsed.length,
+    message: `Query succeeded in ${duration}ms with ${parsed.length} row${parsed.length === 1 ? '' : 's'}.`,
+    sample: parsed[0] || null
+  };
 }
