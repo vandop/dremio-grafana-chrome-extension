@@ -7,6 +7,36 @@ const configHelpersPromise = import(chrome.runtime.getURL('src/common/config.js'
     throw error;
   });
 
+class EventBus {
+  constructor() {
+    this.listeners = new Map();
+  }
+
+  on(event, callback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event).add(callback);
+    return () => this.off(event, callback);
+  }
+
+  off(event, callback) {
+    this.listeners.get(event)?.delete(callback);
+  }
+
+  emit(event, payload) {
+    const listeners = this.listeners.get(event);
+    if (!listeners) return;
+    listeners.forEach(listener => {
+      try {
+        listener(payload);
+      } catch (error) {
+        console.error(`${LOG_PREFIX} Error in event listener for ${event}`, error);
+      }
+    });
+  }
+}
+
 class UuidMapperOverlay {
   constructor() {
     this.element = document.createElement('div');
@@ -294,20 +324,193 @@ class UuidMapperModal {
   }
 }
 
+class UuidOverlayController {
+  constructor({ eventBus }) {
+    this.eventBus = eventBus;
+    this.overlay = new UuidMapperOverlay();
+    this.modal = new UuidMapperModal();
+    this.subscribeToEvents();
+  }
+
+  subscribeToEvents() {
+    this.eventBus.on('uuidHoverStart', ({ event }) => {
+      this.overlay.setPositionFromEvent(event);
+    });
+
+    this.eventBus.on('uuidHoverMove', ({ event }) => {
+      this.overlay.setPositionFromEvent(event);
+    });
+
+    this.eventBus.on('uuidHoverEnd', () => {
+      this.overlay.hide();
+    });
+
+    this.eventBus.on('uuidLookupStarted', () => {
+      this.overlay.showLoading();
+    });
+
+    this.eventBus.on('uuidLookupSuccess', ({ mapping }) => {
+      this.overlay.showMapping(mapping);
+    });
+
+    this.eventBus.on('uuidLookupError', ({ error }) => {
+      this.overlay.showError(error);
+    });
+
+    this.eventBus.on('contextLookupProgress', ({ title, message }) => {
+      this.modal.showProgress(title, message);
+    });
+
+    this.eventBus.on('contextLookupUpdate', ({ message, progress }) => {
+      this.modal.updateProgress(message, progress);
+    });
+
+    this.eventBus.on('contextLookupResult', ({ title, results, error }) => {
+      this.modal.showResults(title, results, error);
+    });
+  }
+}
+
+class UuidDetectionService {
+  constructor({ eventBus, hoverDelay = 300, root = document.body, uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi }) {
+    this.eventBus = eventBus;
+    this.hoverDelay = hoverDelay;
+    this.root = root;
+    this.uuidRegex = uuidRegex;
+    this.hoverTimeouts = new WeakMap();
+  }
+
+  start() {
+    this.scanForUuids();
+    this.setupMutationObserver();
+  }
+
+  scanForUuids() {
+    const walker = document.createTreeWalker(
+      this.root,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode: (node) => {
+          const parent = node.parentElement;
+          if (parent && (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE')) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+
+    let node;
+    const textNodes = [];
+    while (node = walker.nextNode()) {
+      textNodes.push(node);
+    }
+
+    textNodes.forEach(textNode => {
+      this.processTextNode(textNode);
+    });
+  }
+
+  processTextNode(textNode) {
+    const text = textNode.textContent;
+    const matches = [...text.matchAll(this.uuidRegex)];
+
+    if (matches.length === 0) return;
+
+    let lastIndex = 0;
+    const fragments = [];
+
+    matches.forEach(match => {
+      const uuid = match[0];
+      const startIndex = match.index;
+
+      if (startIndex > lastIndex) {
+        fragments.push(document.createTextNode(text.slice(lastIndex, startIndex)));
+      }
+
+      const uuidSpan = document.createElement('span');
+      uuidSpan.textContent = uuid;
+      uuidSpan.className = 'uuid-mappable';
+      this.attachUuidEvents(uuidSpan, uuid);
+      fragments.push(uuidSpan);
+
+      this.eventBus.emit('uuidDetected', { uuid, element: uuidSpan });
+
+      lastIndex = startIndex + uuid.length;
+    });
+
+    if (lastIndex < text.length) {
+      fragments.push(document.createTextNode(text.slice(lastIndex)));
+    }
+
+    const parent = textNode.parentNode;
+    fragments.forEach(fragment => parent.insertBefore(fragment, textNode));
+    parent.removeChild(textNode);
+  }
+
+  attachUuidEvents(element, uuid) {
+    element.addEventListener('mouseenter', (event) => {
+      const timeoutId = setTimeout(() => {
+        this.eventBus.emit('uuidHoverStart', { uuid, event });
+      }, this.hoverDelay);
+      this.hoverTimeouts.set(element, timeoutId);
+    });
+
+    element.addEventListener('mousemove', (event) => {
+      this.eventBus.emit('uuidHoverMove', { uuid, event });
+    });
+
+    element.addEventListener('mouseleave', () => {
+      const timeoutId = this.hoverTimeouts.get(element);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        this.hoverTimeouts.delete(element);
+      }
+      this.eventBus.emit('uuidHoverEnd', { uuid });
+    });
+  }
+
+  setupMutationObserver() {
+    const observer = new MutationObserver((mutations) => {
+      let shouldRescan = false;
+
+      mutations.forEach((mutation) => {
+        if (mutation.type === 'childList') {
+          mutation.addedNodes.forEach((node) => {
+            if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
+              shouldRescan = true;
+            }
+          });
+        }
+      });
+
+      if (shouldRescan) {
+        clearTimeout(this.rescanTimeout);
+        this.rescanTimeout = setTimeout(() => {
+          this.scanForUuids();
+        }, 500);
+      }
+    });
+
+    observer.observe(this.root, {
+      childList: true,
+      subtree: true
+    });
+  }
+}
+
 class UuidMapper {
   constructor({ configService = null, configModulePromise = configHelpersPromise } = {}) {
-    this.uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-    this.processedUuids = new Set();
     this.mappingCache = new Map();
-    this.overlay = null;
-    this.modal = null;
-    this.hoverTimeout = null;
     this.config = null;
     this.configHelpers = null;
     this.configService = configService;
     this.configModulePromise = configModulePromise;
     this.configValid = false;
     this.configErrorMessage = null;
+    this.eventBus = new EventBus();
+    this.detectionService = null;
+    this.overlayController = null;
 
     console.log(`${LOG_PREFIX} UuidMapper constructor called`);
     this.init();
@@ -338,11 +541,13 @@ class UuidMapper {
     }
 
     console.log(`${LOG_PREFIX} Configuration valid, setting up UUID detection`);
-    this.overlay = new UuidMapperOverlay();
-    this.modal = new UuidMapperModal();
-    // Disabled automatic scanning - only use context menu (right-click)
-    // this.scanForUuids();
-    // this.setupMutationObserver();
+    this.overlayController = new UuidOverlayController({ eventBus: this.eventBus });
+    this.detectionService = new UuidDetectionService({
+      eventBus: this.eventBus,
+      hoverDelay: this.config.advanced.hoverDelay || 300
+    });
+    this.detectionService.start();
+    this.subscribeToDetectionEvents();
     this.setupMessageListener();
 
     console.log(`${LOG_PREFIX} Initialization complete - context menu ready`);
@@ -400,117 +605,23 @@ class UuidMapper {
 
   
 
-  scanForUuids() {
-    console.log(`${LOG_PREFIX} Scanning page for UUIDs`);
-    const walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode: (node) => {
-          // Skip script and style elements
-          const parent = node.parentElement;
-          if (parent && (parent.tagName === 'SCRIPT' || parent.tagName === 'STYLE')) {
-            return NodeFilter.FILTER_REJECT;
-          }
-          return NodeFilter.FILTER_ACCEPT;
-        }
-      }
-    );
-
-    const textNodes = [];
-    let node;
-    while (node = walker.nextNode()) {
-      textNodes.push(node);
-    }
-
-    console.log(`${LOG_PREFIX} Found ${textNodes.length} text nodes to process`);
-    let uuidCount = 0;
-    textNodes.forEach(textNode => {
-      const count = this.processTextNode(textNode);
-      uuidCount += count;
-    });
-    console.log(`${LOG_PREFIX} Scan complete: ${uuidCount} UUIDs found and highlighted`);
-  }
-
-  processTextNode(textNode) {
-    const text = textNode.textContent;
-    const matches = [...text.matchAll(this.uuidRegex)];
-
-    if (matches.length === 0) return 0;
-
-    let lastIndex = 0;
-    const fragments = [];
-
-    matches.forEach(match => {
-      const uuid = match[0];
-      const startIndex = match.index;
-
-      // Add text before UUID
-      if (startIndex > lastIndex) {
-        fragments.push(document.createTextNode(text.slice(lastIndex, startIndex)));
-      }
-
-      // Create UUID span
-      const uuidSpan = document.createElement('span');
-      uuidSpan.textContent = uuid;
-      uuidSpan.className = 'uuid-mappable';
-
-      this.attachUuidEvents(uuidSpan, uuid);
-      fragments.push(uuidSpan);
-
-      lastIndex = startIndex + uuid.length;
-    });
-
-    // Add remaining text
-    if (lastIndex < text.length) {
-      fragments.push(document.createTextNode(text.slice(lastIndex)));
-    }
-
-    // Replace original text node with fragments
-    const parent = textNode.parentNode;
-    fragments.forEach(fragment => parent.insertBefore(fragment, textNode));
-    parent.removeChild(textNode);
-
-    return matches.length;
-  }
-
-  attachUuidEvents(element, uuid) {
-    element.addEventListener('mouseenter', (e) => {
-      this.hoverTimeout = setTimeout(() => {
-        this.showUuidInfo(e, uuid);
-      }, this.config.advanced.hoverDelay || 300);
-    });
-
-    element.addEventListener('mouseleave', () => {
-      if (this.hoverTimeout) {
-        clearTimeout(this.hoverTimeout);
-        this.hoverTimeout = null;
-      }
-      this.hideOverlay();
-    });
-
-    element.addEventListener('mousemove', (e) => {
-      if (this.overlay?.isVisible()) {
-        this.positionOverlay(e);
-      }
+  subscribeToDetectionEvents() {
+    this.eventBus.on('uuidHoverStart', ({ uuid }) => {
+      this.handleUuidHover(uuid);
     });
   }
 
-  async showUuidInfo(event, uuid) {
-    console.log(`${LOG_PREFIX} Showing info for UUID: ${uuid}`);
-    this.positionOverlay(event);
+  async handleUuidHover(uuid) {
+    console.log(`${LOG_PREFIX} Handling hover for UUID: ${uuid}`);
 
-    // Check cache first
     if (this.mappingCache.has(uuid)) {
       console.log(`${LOG_PREFIX} Using cached mapping for ${uuid}`);
       const mapping = this.mappingCache.get(uuid);
-      this.displayMapping(mapping);
+      this.eventBus.emit('uuidLookupSuccess', { uuid, mapping });
       return;
     }
 
-    // Show loading state
-    console.log(`${LOG_PREFIX} Fetching mapping from Dremio for ${uuid}`);
-    this.overlay?.showLoading();
+    this.eventBus.emit('uuidLookupStarted', { uuid });
 
     try {
       const response = await chrome.runtime.sendMessage({
@@ -518,68 +629,19 @@ class UuidMapper {
         uuids: [uuid]
       });
 
-      console.log(`${LOG_PREFIX} Received response for ${uuid}:`, response);
-
       if (response.success && response.data[uuid]) {
         const mapping = response.data[uuid];
         this.mappingCache.set(uuid, mapping);
-        this.displayMapping(mapping);
+        this.eventBus.emit('uuidLookupSuccess', { uuid, mapping });
       } else {
-        console.error(`${LOG_PREFIX} Failed to get mapping:`, response.error);
-        this.displayError(response.error || 'Mapping not found');
+        const error = response.error || 'Mapping not found';
+        console.error(`${LOG_PREFIX} Failed to get mapping:`, error);
+        this.eventBus.emit('uuidLookupError', { uuid, error: `Error: ${error}` });
       }
     } catch (error) {
       console.error(`${LOG_PREFIX} Error fetching mapping:`, error);
-      this.displayError(`Failed to fetch mapping: ${error.message}`);
+      this.eventBus.emit('uuidLookupError', { uuid, error: `Failed to fetch mapping: ${error.message}` });
     }
-  }
-
-  displayMapping(mapping) {
-    if (!this.overlay) return;
-    this.overlay.showMapping(mapping);
-  }
-
-  displayError(message) {
-    this.overlay?.showError(`Error: ${message}`);
-  }
-
-  positionOverlay(event) {
-    this.overlay?.setPositionFromEvent(event);
-  }
-
-  hideOverlay() {
-    this.overlay?.hide();
-  }
-
-  setupMutationObserver() {
-    console.log(`${LOG_PREFIX} Setting up mutation observer for dynamic content`);
-    const observer = new MutationObserver((mutations) => {
-      let shouldRescan = false;
-
-      mutations.forEach((mutation) => {
-        if (mutation.type === 'childList') {
-          mutation.addedNodes.forEach((node) => {
-            if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
-              shouldRescan = true;
-            }
-          });
-        }
-      });
-
-      if (shouldRescan) {
-        // Debounce rescanning
-        clearTimeout(this.rescanTimeout);
-        this.rescanTimeout = setTimeout(() => {
-          console.log(`${LOG_PREFIX} DOM changed, rescanning for UUIDs`);
-          this.scanForUuids();
-        }, 500);
-      }
-    });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
   }
 
   setupMessageListener() {
@@ -587,11 +649,17 @@ class UuidMapper {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       console.log(`${LOG_PREFIX} Message received:`, request.action);
 
-      if (request.action === 'showProgress' && this.modal) {
-        this.modal.showProgress(request.title, request.message);
+      if (request.action === 'showProgress') {
+        this.eventBus.emit('contextLookupProgress', {
+          title: request.title,
+          message: request.message
+        });
         sendResponse({ received: true });
-      } else if (request.action === 'updateProgress' && this.modal) {
-        this.modal.updateProgress(request.message, request.progress);
+      } else if (request.action === 'updateProgress') {
+        this.eventBus.emit('contextLookupUpdate', {
+          message: request.message,
+          progress: request.progress
+        });
         sendResponse({ received: true });
       } else if (request.action === 'showUuidResult') {
         this.showContextMenuResult(request);
@@ -605,11 +673,19 @@ class UuidMapper {
 
     if (request.error) {
       console.error(`${LOG_PREFIX} Context menu lookup error:`, request.error);
-      this.modal?.showResults('UUID Lookup Result', null, request.error);
+      this.eventBus.emit('contextLookupResult', {
+        title: 'UUID Lookup Result',
+        results: null,
+        error: request.error
+      });
     } else if (request.result) {
       console.log(`${LOG_PREFIX} Context menu lookup success:`, request.result);
       this.mappingCache.set(request.uuid, request.result);
-      this.modal?.showResults('UUID Lookup Result', [request.result]);
+      this.eventBus.emit('contextLookupResult', {
+        title: 'UUID Lookup Result',
+        results: [request.result],
+        error: null
+      });
     }
   }
 }
