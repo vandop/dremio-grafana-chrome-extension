@@ -7,12 +7,300 @@ const configHelpersPromise = import(chrome.runtime.getURL('src/common/config.js'
     throw error;
   });
 
+class UuidMapperOverlay {
+  constructor() {
+    this.element = document.createElement('div');
+    this.element.id = 'uuid-mapper-overlay';
+    this.content = document.createElement('div');
+    this.content.classList.add('uuid-mapper-overlay__content');
+    this.element.appendChild(this.content);
+    document.body.appendChild(this.element);
+  }
+
+  showLoading(message = 'Loading...') {
+    const container = document.createElement('div');
+    container.classList.add('uuid-mapper-overlay__status');
+
+    const spinner = document.createElement('span');
+    spinner.classList.add('uuid-mapper-loading');
+    const text = document.createElement('span');
+    text.textContent = message;
+
+    container.append(spinner, text);
+    this.setContent(container);
+    this.show();
+  }
+
+  showMapping(mapping) {
+    if (mapping?.error) {
+      this.showError(`Error: ${mapping.name}`);
+      return;
+    }
+
+    const wrapper = document.createElement('div');
+
+    const name = document.createElement('strong');
+    name.classList.add('uuid-mapper-overlay__name');
+    name.textContent = mapping.name;
+    wrapper.appendChild(name);
+
+    if (mapping.description) {
+      const description = document.createElement('p');
+      description.classList.add('uuid-mapper-overlay__description');
+      description.textContent = mapping.description;
+      wrapper.appendChild(description);
+    }
+
+    if (mapping.cached) {
+      const cached = document.createElement('span');
+      cached.classList.add('uuid-mapper-cached');
+      cached.textContent = '📦 Cached';
+      wrapper.appendChild(cached);
+    }
+
+    this.setContent(wrapper);
+    this.show();
+  }
+
+  showError(message) {
+    const error = document.createElement('span');
+    error.classList.add('uuid-mapper-error');
+    error.textContent = message;
+    this.setContent(error);
+    this.show();
+  }
+
+  setContent(content) {
+    this.content.replaceChildren(content);
+  }
+
+  setPositionFromEvent(event) {
+    if (!event) return;
+    this.setPosition(event.pageX, event.pageY);
+  }
+
+  setPosition(pageX, pageY) {
+    const rect = this.element.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+
+    let left = pageX + 10;
+    let top = pageY - rect.height - 10;
+
+    if (left + rect.width > viewportWidth) {
+      left = pageX - rect.width - 10;
+    }
+
+    if (top < window.pageYOffset) {
+      top = pageY + 20;
+    }
+
+    this.element.style.left = `${left}px`;
+    this.element.style.top = `${top}px`;
+  }
+
+  isVisible() {
+    return this.element.classList.contains('visible');
+  }
+
+  show() {
+    this.element.classList.add('visible');
+  }
+
+  hide() {
+    this.element.classList.remove('visible');
+  }
+}
+
+class UuidMapperModal {
+  constructor() {
+    this.backdrop = document.createElement('div');
+    this.backdrop.classList.add('uuid-mapper-backdrop');
+
+    this.modal = document.createElement('div');
+    this.modal.classList.add('uuid-mapper-modal');
+
+    this.header = document.createElement('div');
+    this.header.classList.add('uuid-mapper-modal__header');
+    this.titleEl = document.createElement('h3');
+    this.header.appendChild(this.titleEl);
+
+    this.body = document.createElement('div');
+    this.body.classList.add('uuid-mapper-modal__body');
+
+    this.footer = document.createElement('div');
+    this.footer.classList.add('uuid-mapper-modal__footer');
+
+    this.modal.append(this.header, this.body, this.footer);
+    document.body.append(this.backdrop, this.modal);
+
+    this.statusMessageEl = null;
+    this.progressWrapper = null;
+    this.progressFillEl = null;
+    this.progressValueEl = null;
+  }
+
+  show() {
+    this.backdrop.classList.add('visible');
+    this.modal.classList.add('visible');
+  }
+
+  hide() {
+    this.backdrop.classList.remove('visible');
+    this.modal.classList.remove('visible');
+  }
+
+  setTitle(title) {
+    this.titleEl.textContent = title;
+  }
+
+  showProgress(title, message) {
+    this.setTitle(title);
+    this.body.replaceChildren(this.createStatus(message));
+    this.ensureProgressElements();
+    if (!this.progressWrapper.isConnected) {
+      this.body.appendChild(this.progressWrapper);
+    }
+    if (this.progressFillEl) {
+      this.progressFillEl.style.width = '0%';
+    }
+    if (this.progressValueEl) {
+      this.progressValueEl.textContent = '0%';
+    }
+    this.progressWrapper.classList.remove('uuid-mapper-hidden');
+    this.footer.replaceChildren();
+    this.show();
+  }
+
+  updateProgress(message, progress) {
+    if (this.statusMessageEl) {
+      this.statusMessageEl.textContent = message;
+    }
+
+    if (typeof progress === 'number' && this.progressFillEl && this.progressValueEl) {
+      this.progressFillEl.style.width = `${progress}%`;
+      this.progressValueEl.textContent = `${Math.round(progress)}%`;
+      this.progressWrapper?.classList.remove('uuid-mapper-hidden');
+    } else if (this.progressWrapper) {
+      this.progressWrapper.classList.add('uuid-mapper-hidden');
+    }
+  }
+
+  showResults(title, results, error = null) {
+    this.setTitle(title);
+    this.statusMessageEl = null;
+    if (this.progressWrapper) {
+      this.progressWrapper.classList.add('uuid-mapper-hidden');
+    }
+    const fragments = [];
+
+    if (error) {
+      const errorEl = document.createElement('div');
+      errorEl.classList.add('uuid-mapper-modal__error');
+      errorEl.textContent = `Error: ${error}`;
+      fragments.push(errorEl);
+    }
+
+    if (Array.isArray(results) && results.length > 0) {
+      const list = document.createElement('div');
+      list.classList.add('uuid-mapper-modal__results');
+      results.forEach(result => {
+        const item = document.createElement('div');
+        item.classList.add('uuid-mapper-result');
+
+        const uuid = document.createElement('div');
+        uuid.classList.add('uuid-mapper-result__uuid');
+        uuid.textContent = result.uuid;
+        item.appendChild(uuid);
+
+        const name = document.createElement('div');
+        name.classList.add('uuid-mapper-result__name');
+        name.textContent = result.name || 'No name';
+        item.appendChild(name);
+
+        if (result.description) {
+          const description = document.createElement('div');
+          description.classList.add('uuid-mapper-result__description');
+          description.textContent = result.description;
+          item.appendChild(description);
+        }
+
+        if (result.cached) {
+          const cached = document.createElement('div');
+          cached.classList.add('uuid-mapper-result__cached');
+          cached.textContent = '📦 Cached';
+          item.appendChild(cached);
+        }
+
+        list.appendChild(item);
+      });
+      fragments.push(list);
+    } else if (!error) {
+      const empty = document.createElement('p');
+      empty.classList.add('uuid-mapper-modal__empty');
+      empty.textContent = 'No results found';
+      fragments.push(empty);
+    }
+
+    this.body.replaceChildren(...fragments);
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.classList.add('uuid-mapper-button');
+    closeButton.textContent = 'Close';
+    closeButton.addEventListener('click', () => this.hide());
+
+    this.footer.replaceChildren(closeButton);
+    this.show();
+  }
+
+  createStatus(message) {
+    const status = document.createElement('div');
+    status.classList.add('uuid-mapper-modal__status');
+
+    const spinner = document.createElement('span');
+    spinner.classList.add('uuid-mapper-loading', 'uuid-mapper-modal__spinner');
+
+    const text = document.createElement('span');
+    text.classList.add('uuid-mapper-modal__message');
+    text.textContent = message;
+
+    status.append(spinner, text);
+    this.statusMessageEl = text;
+    return status;
+  }
+
+  ensureProgressElements() {
+    if (this.progressWrapper) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.classList.add('uuid-mapper-progress');
+
+    const bar = document.createElement('div');
+    bar.classList.add('uuid-mapper-progress__bar');
+
+    const fill = document.createElement('div');
+    fill.classList.add('uuid-mapper-progress__fill');
+    bar.appendChild(fill);
+
+    const value = document.createElement('p');
+    value.classList.add('uuid-mapper-progress__value');
+    value.textContent = '0%';
+
+    wrapper.append(bar, value);
+
+    this.progressWrapper = wrapper;
+    this.progressFillEl = fill;
+    this.progressValueEl = value;
+  }
+}
+
 class UuidMapper {
   constructor({ configService = null, configModulePromise = configHelpersPromise } = {}) {
     this.uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
     this.processedUuids = new Set();
     this.mappingCache = new Map();
     this.overlay = null;
+    this.modal = null;
     this.hoverTimeout = null;
     this.config = null;
     this.configHelpers = null;
@@ -50,8 +338,8 @@ class UuidMapper {
     }
 
     console.log(`${LOG_PREFIX} Configuration valid, setting up UUID detection`);
-    this.createOverlay();
-    this.createProgressModal();
+    this.overlay = new UuidMapperOverlay();
+    this.modal = new UuidMapperModal();
     // Disabled automatic scanning - only use context menu (right-click)
     // this.scanForUuids();
     // this.setupMutationObserver();
@@ -110,157 +398,7 @@ class UuidMapper {
     return this.configValid;
   }
 
-  createOverlay() {
-    this.overlay = document.createElement('div');
-    this.overlay.id = 'uuid-mapper-overlay';
-    this.overlay.style.cssText = `
-      position: absolute;
-      background: rgba(0, 0, 0, 0.9);
-      color: white;
-      padding: 8px 12px;
-      border-radius: 4px;
-      font-size: 12px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      z-index: 10000;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.2s ease;
-      max-width: 300px;
-      word-wrap: break-word;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    `;
-    document.body.appendChild(this.overlay);
-  }
-
-  createProgressModal() {
-    this.progressModal = document.createElement('div');
-    this.progressModal.id = 'uuid-mapper-progress-modal';
-    this.progressModal.style.cssText = `
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: white;
-      border-radius: 8px;
-      padding: 24px;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-      z-index: 100000;
-      min-width: 400px;
-      max-width: 600px;
-      max-height: 80vh;
-      overflow-y: auto;
-      display: none;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    `;
-
-    // Add backdrop
-    this.progressBackdrop = document.createElement('div');
-    this.progressBackdrop.id = 'uuid-mapper-progress-backdrop';
-    this.progressBackdrop.style.cssText = `
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0, 0, 0, 0.5);
-      z-index: 99999;
-      display: none;
-    `;
-
-    document.body.appendChild(this.progressBackdrop);
-    document.body.appendChild(this.progressModal);
-  }
-
-  showProgressModal(title, message) {
-    this.progressBackdrop.style.display = 'block';
-    this.progressModal.style.display = 'block';
-    this.progressModal.innerHTML = `
-      <div style="margin-bottom: 16px;">
-        <h3 style="margin: 0 0 8px 0; font-size: 18px; color: #333;">${title}</h3>
-        <p style="margin: 0; color: #666; font-size: 14px;">${message}</p>
-      </div>
-      <div style="display: flex; align-items: center; padding: 12px; background: #f5f5f5; border-radius: 4px;">
-        <div style="width: 16px; height: 16px; border: 3px solid #1976d2; border-top: 3px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 12px;"></div>
-        <span style="color: #666; font-size: 14px;">Processing query...</span>
-      </div>
-    `;
-
-    // Add spin animation if not already added
-    if (!document.getElementById('uuid-mapper-spin-style')) {
-      const style = document.createElement('style');
-      style.id = 'uuid-mapper-spin-style';
-      style.textContent = `
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      `;
-      document.head.appendChild(style);
-    }
-  }
-
-  updateProgressModal(message, progress) {
-    const progressBar = progress !== undefined ? `
-      <div style="margin-top: 12px;">
-        <div style="background: #e0e0e0; border-radius: 4px; height: 8px; overflow: hidden;">
-          <div style="background: #1976d2; height: 100%; width: ${progress}%; transition: width 0.3s ease;"></div>
-        </div>
-        <p style="margin: 8px 0 0 0; color: #666; font-size: 12px; text-align: center;">${Math.round(progress)}%</p>
-      </div>
-    ` : '';
-
-    this.progressModal.querySelector('div[style*="background: #f5f5f5"]').innerHTML = `
-      <div style="width: 16px; height: 16px; border: 3px solid #1976d2; border-top: 3px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 12px;"></div>
-      <span style="color: #666; font-size: 14px;">${message}</span>
-      ${progressBar}
-    `;
-  }
-
-  showResultModal(title, results, error = null) {
-    this.progressModal.innerHTML = `
-      <div style="margin-bottom: 16px;">
-        <h3 style="margin: 0 0 8px 0; font-size: 18px; color: #333;">${title}</h3>
-      </div>
-      ${error ? `
-        <div style="padding: 12px; background: #ffebee; border-left: 4px solid #f44336; border-radius: 4px; margin-bottom: 16px;">
-          <p style="margin: 0; color: #c62828; font-size: 14px;"><strong>Error:</strong> ${error}</p>
-        </div>
-      ` : ''}
-      ${results && results.length > 0 ? `
-        <div style="max-height: 400px; overflow-y: auto;">
-          ${results.map(r => `
-            <div style="padding: 12px; background: #f5f5f5; border-radius: 4px; margin-bottom: 8px;">
-              <div style="font-family: monospace; font-size: 12px; color: #666; margin-bottom: 4px;">${r.uuid}</div>
-              <div style="font-size: 14px; color: #333; font-weight: 500;">${r.name || 'No name'}</div>
-              ${r.description ? `<div style="font-size: 13px; color: #666; margin-top: 4px;">${r.description}</div>` : ''}
-              ${r.cached ? '<div style="font-size: 11px; color: #1976d2; margin-top: 4px;">📦 Cached</div>' : ''}
-            </div>
-          `).join('')}
-        </div>
-      ` : !error ? '<p style="color: #666; text-align: center; padding: 20px;">No results found</p>' : ''}
-      <div style="margin-top: 16px; text-align: right;">
-        <button id="uuid-mapper-close-modal" style="
-          background: #1976d2;
-          color: white;
-          border: none;
-          padding: 8px 16px;
-          border-radius: 4px;
-          cursor: pointer;
-          font-size: 14px;
-          font-weight: 500;
-        ">Close</button>
-      </div>
-    `;
-
-    document.getElementById('uuid-mapper-close-modal').addEventListener('click', () => {
-      this.hideProgressModal();
-    });
-  }
-
-  hideProgressModal() {
-    this.progressBackdrop.style.display = 'none';
-    this.progressModal.style.display = 'none';
-  }
+  
 
   scanForUuids() {
     console.log(`${LOG_PREFIX} Scanning page for UUIDs`);
@@ -316,12 +454,6 @@ class UuidMapper {
       const uuidSpan = document.createElement('span');
       uuidSpan.textContent = uuid;
       uuidSpan.className = 'uuid-mappable';
-      uuidSpan.style.cssText = `
-        background: rgba(0, 123, 186, 0.1);
-        border-bottom: 1px dotted #007cba;
-        cursor: help;
-        position: relative;
-      `;
 
       this.attachUuidEvents(uuidSpan, uuid);
       fragments.push(uuidSpan);
@@ -358,7 +490,7 @@ class UuidMapper {
     });
 
     element.addEventListener('mousemove', (e) => {
-      if (this.overlay.style.opacity === '1') {
+      if (this.overlay?.isVisible()) {
         this.positionOverlay(e);
       }
     });
@@ -378,13 +510,7 @@ class UuidMapper {
 
     // Show loading state
     console.log(`${LOG_PREFIX} Fetching mapping from Dremio for ${uuid}`);
-    this.overlay.innerHTML = `
-      <div style="display: flex; align-items: center;">
-        <div style="width: 12px; height: 12px; border: 2px solid #fff; border-top: 2px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px;"></div>
-        Loading...
-      </div>
-    `;
-    this.overlay.style.opacity = '1';
+    this.overlay?.showLoading();
 
     try {
       const response = await chrome.runtime.sendMessage({
@@ -409,52 +535,20 @@ class UuidMapper {
   }
 
   displayMapping(mapping) {
-    let content = `<strong>${mapping.name}</strong>`;
-
-    if (mapping.description) {
-      content += `<br><small style="opacity: 0.8;">${mapping.description}</small>`;
-    }
-
-    if (mapping.cached) {
-      content += `<br><small style="opacity: 0.6; font-style: italic;">Cached</small>`;
-    }
-
-    if (mapping.error) {
-      content = `<span style="color: #ff6b6b;">Error: ${mapping.name}</span>`;
-    }
-
-    this.overlay.innerHTML = content;
-    this.overlay.style.opacity = '1';
+    if (!this.overlay) return;
+    this.overlay.showMapping(mapping);
   }
 
   displayError(message) {
-    this.overlay.innerHTML = `<span style="color: #ff6b6b;">Error: ${message}</span>`;
-    this.overlay.style.opacity = '1';
+    this.overlay?.showError(`Error: ${message}`);
   }
 
   positionOverlay(event) {
-    const rect = this.overlay.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-
-    let left = event.pageX + 10;
-    let top = event.pageY - rect.height - 10;
-
-    // Adjust if overlay would go off-screen
-    if (left + rect.width > viewportWidth) {
-      left = event.pageX - rect.width - 10;
-    }
-
-    if (top < window.pageYOffset) {
-      top = event.pageY + 20;
-    }
-
-    this.overlay.style.left = `${left}px`;
-    this.overlay.style.top = `${top}px`;
+    this.overlay?.setPositionFromEvent(event);
   }
 
   hideOverlay() {
-    this.overlay.style.opacity = '0';
+    this.overlay?.hide();
   }
 
   setupMutationObserver() {
@@ -493,11 +587,11 @@ class UuidMapper {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       console.log(`${LOG_PREFIX} Message received:`, request.action);
 
-      if (request.action === 'showProgress') {
-        this.showProgressModal(request.title, request.message);
+      if (request.action === 'showProgress' && this.modal) {
+        this.modal.showProgress(request.title, request.message);
         sendResponse({ received: true });
-      } else if (request.action === 'updateProgress') {
-        this.updateProgressModal(request.message, request.progress);
+      } else if (request.action === 'updateProgress' && this.modal) {
+        this.modal.updateProgress(request.message, request.progress);
         sendResponse({ received: true });
       } else if (request.action === 'showUuidResult') {
         this.showContextMenuResult(request);
@@ -511,24 +605,14 @@ class UuidMapper {
 
     if (request.error) {
       console.error(`${LOG_PREFIX} Context menu lookup error:`, request.error);
-      this.showResultModal('UUID Lookup Result', null, request.error);
+      this.modal?.showResults('UUID Lookup Result', null, request.error);
     } else if (request.result) {
       console.log(`${LOG_PREFIX} Context menu lookup success:`, request.result);
       this.mappingCache.set(request.uuid, request.result);
-      this.showResultModal('UUID Lookup Result', [request.result]);
+      this.modal?.showResults('UUID Lookup Result', [request.result]);
     }
   }
 }
-
-// Add CSS animation for loading spinner
-const style = document.createElement('style');
-style.textContent = `
-  @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-  }
-`;
-document.head.appendChild(style);
 
 // Initialize when DOM is ready
 console.log(`${LOG_PREFIX} Content script loaded on ${window.location.href}`);
