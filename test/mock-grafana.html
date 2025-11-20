@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mock Grafana Dashboard</title>
+    <style>
+        body {
+            background-color: #111217;
+            color: #c7d0d9;
+            font-family: Inter, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        .grafana-app {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .panel {
+            background-color: #181b1f;
+            border: 1px solid #22252b;
+            border-radius: 2px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .panel-header {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 12px;
+            color: #9fa7b3;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th {
+            text-align: left;
+            color: #6e9fff;
+            padding: 8px;
+            border-bottom: 2px solid #22252b;
+        }
+        td {
+            padding: 8px;
+            border-bottom: 1px solid #22252b;
+            font-family: monospace;
+        }
+        .instructions {
+            background: #22252b;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-left: 4px solid #6e9fff;
+        }
+    </style>
+</head>
+<body>
+    <div class="grafana-app" data-testid="grafana">
+        <h1>Mock Grafana Dashboard</h1>
+        
+        <div class="instructions">
+            <h3>Testing Instructions</h3>
+            <ol>
+                <li>Ensure the <strong>Grafana UUID Mapper</strong> extension is installed and enabled.</li>
+                <li>Configure the extension with your Dremio credentials (or use mock data if supported).</li>
+                <li>Hover over the UUIDs below. If configured, they should show a tooltip (if that feature is enabled).</li>
+                <li><strong>Right-click</strong> on a UUID and select "Lookup UUID in Dremio".</li>
+            </ol>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">Server Instances (Valid UUIDs)</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Server Name</th>
+                        <th>Instance ID (UUID)</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Production-01</td>
+                        <td>550e8400-e29b-41d4-a716-446655440000</td>
+                        <td style="color: #73bf69">Running</td>
+                    </tr>
+                    <tr>
+                        <td>Staging-01</td>
+                        <td>6ba7b810-9dad-11d1-80b4-00c04fd430c8</td>
+                        <td style="color: #e0b400">Warning</td>
+                    </tr>
+                    <tr>
+                        <td>Dev-01</td>
+                        <td>6ba7b811-9dad-11d1-80b4-00c04fd430c8</td>
+                        <td style="color: #f2495c">Stopped</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">Edge Cases</div>
+            <p><strong>Invalid UUID (too short):</strong> 550e8400-e29b-41d4-a716-44665544</p>
+            <p><strong>Invalid UUID (bad chars):</strong> 550e8400-e29b-41d4-a716-zzzzzzzzzzzz</p>
+            <p><strong>UUID in text:</strong> The server ID is 550e8400-e29b-41d4-a716-446655440000 and it is critical.</p>
+        </div>
+    </div>
+</body>
+</html>
